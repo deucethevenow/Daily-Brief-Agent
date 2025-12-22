@@ -1,0 +1,59 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment files (secrets loaded from Secret Manager in cloud)
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Logs and data (regenerated in cloud)
+logs/
+data/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation (not needed in container)
+*.md
+!requirements.txt
+
+# Test files
+test_*.py
+test_*.sh
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Development scripts
+run_with_timeout.sh
+*.plist
+analyze_*.py
+inspect_*.py
+list_*.py
+validate_*.py
+setup.py
+run_for_date.py
+scheduler.py
+
+# Claude config
+.claude/

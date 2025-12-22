@@ -1,0 +1,64 @@
+# Cloud Build configuration for Daily Brief Agent
+# Builds and deploys to Cloud Run Jobs
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:$COMMIT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:latest'
+      - '.'
+
+  # Push the image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:$COMMIT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:latest'
+
+  # Deploy to Cloud Run Jobs
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'deploy'
+      - 'daily-brief-agent'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--task-timeout'
+      - '15m'
+      - '--max-retries'
+      - '1'
+      - '--set-secrets'
+      - 'ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,AIRTABLE_API_KEY=AIRTABLE_API_KEY:latest,AIRTABLE_BASE_ID=AIRTABLE_BASE_ID:latest,AIRTABLE_TABLE_NAME=AIRTABLE_TABLE_NAME:latest,ASANA_ACCESS_TOKEN=ASANA_ACCESS_TOKEN:latest,ASANA_WORKSPACE_GID=ASANA_WORKSPACE_GID:latest,SLACK_BOT_TOKEN=SLACK_BOT_TOKEN:latest,SLACK_CHANNEL_ID=SLACK_CHANNEL_ID:latest'
+      - '--set-env-vars'
+      - 'TEAM_MEMBERS=${_TEAM_MEMBERS},ASANA_TASK_AGE_LIMIT_DAYS=${_ASANA_TASK_AGE_LIMIT_DAYS},YOUR_NAME=${_YOUR_NAME},MONITORED_USERS=${_MONITORED_USERS}'
+
+# Build-time substitutions (configure in Cloud Build trigger or use defaults)
+substitutions:
+  _TEAM_MEMBERS: 'Deuce Thevenow,Charlene Short,Recess Accounting,Ian Hong,Ines Pagliara,Jack Shannon,Danny Sears,Claire A,Andy Cooper,Courtney Cook,Arbind Thakur,Lucas Lima Alves,Anderson Camargo,Ashton Owens,Francisco Cazes,Mateus Thurow'
+  _ASANA_TASK_AGE_LIMIT_DAYS: '45'
+  _YOUR_NAME: ''
+  _MONITORED_USERS: 'Deuce Thevenow,Jack Shannon'
+
+# Store images in Artifact Registry
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:$COMMIT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/daily-brief/daily-brief-agent:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
