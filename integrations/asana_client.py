@@ -94,6 +94,49 @@ class AsanaClient:
             logger.error(f"Error creating task '{title}': {e}")
             raise
 
+    def find_existing_mention_task_for_today(self, assignee_name: str) -> Optional[Dict[str, Any]]:
+        """Check if a 'Respond to @Mentions' task already exists for today for this user.
+
+        Args:
+            assignee_name: Name of the user to check for
+
+        Returns:
+            Existing task data if found, None otherwise
+        """
+        today = datetime.now(Config.TIMEZONE)
+        date_pattern = today.strftime('%b %d')  # e.g., "Jan 20"
+
+        try:
+            # Get the user's GID
+            user_gid = self.get_user_gid_by_name(assignee_name)
+            if not user_gid:
+                logger.warning(f"Could not find user GID for {assignee_name}")
+                return None
+
+            # Search for incomplete tasks assigned to this user with today's date in title
+            tasks = self.tasks_api.get_tasks(
+                opts={
+                    'assignee': user_gid,
+                    'workspace': self.workspace_gid,
+                    'completed': False,
+                    'opt_fields': 'name,gid,created_at'
+                }
+            )
+
+            # Look for a matching mention task
+            for task in tasks:
+                task_name = task.get('name', '')
+                # Match tasks like "📬 Respond to Unanswered @Mentions - Jan 20"
+                if '📬' in task_name and 'Mentions' in task_name and date_pattern in task_name:
+                    logger.info(f"Found existing mention task for {assignee_name}: {task['gid']} - {task_name}")
+                    return task
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error checking for existing mention task: {e}")
+            return None
+
     def create_respond_to_mentions_task(self, mentions: List[Dict[str, Any]],
                                         assignee_name: str = None) -> Optional[Dict[str, Any]]:
         """Create a daily task to respond to unanswered @mentions.

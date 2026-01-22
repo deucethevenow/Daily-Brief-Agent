@@ -137,6 +137,7 @@ class DailyBriefCoordinator:
                         )
 
                         # Create Asana task ONLY for NEW mentions (not previously processed)
+                        # IMPORTANT: Create SEPARATE tasks for each monitored user
                         if new_mentions_for_task:
                             # Get the new mentions with their drafted responses
                             new_mention_ids = {m.get('mention_story_gid') for m in new_mentions_for_task}
@@ -145,15 +146,39 @@ class DailyBriefCoordinator:
                                 if m.get('mention_story_gid') in new_mention_ids
                             ]
 
-                            logger.info(f"Creating Asana task for {len(new_mentions_with_drafts)} new mentions")
-                            try:
-                                task_result = self.asana.create_respond_to_mentions_task(new_mentions_with_drafts)
-                                if task_result:
-                                    logger.info(f"Created respond-to-mentions task: {task_result.get('gid')}")
-                                    # Mark these mentions as processed so they won't be added again
-                                    mark_mentions_as_processed(new_mentions_with_drafts)
-                            except Exception as e:
-                                logger.error(f"Failed to create respond-to-mentions task: {e}")
+                            # Group mentions by the user they're for
+                            mentions_by_user = {}
+                            for mention in new_mentions_with_drafts:
+                                user_name = mention.get('mentioned_user_name', 'Unknown')
+                                if user_name not in mentions_by_user:
+                                    mentions_by_user[user_name] = []
+                                mentions_by_user[user_name].append(mention)
+
+                            logger.info(f"Creating separate Asana tasks for {len(mentions_by_user)} users with {len(new_mentions_with_drafts)} total mentions")
+
+                            # Create a separate task for each user (with duplicate prevention)
+                            created_tasks = []
+                            for user_name, user_mentions in mentions_by_user.items():
+                                try:
+                                    # Check if a mention task already exists for this user today
+                                    existing_task = self.asana.find_existing_mention_task_for_today(user_name)
+                                    if existing_task:
+                                        logger.info(f"Skipping task creation for {user_name} - task already exists: {existing_task.get('gid')}")
+                                        # Still mark mentions as processed to avoid re-processing
+                                        mark_mentions_as_processed(user_mentions)
+                                        continue
+
+                                    task_result = self.asana.create_respond_to_mentions_task(
+                                        user_mentions,
+                                        assignee_name=user_name  # Assign to the mentioned user
+                                    )
+                                    if task_result:
+                                        logger.info(f"Created respond-to-mentions task for {user_name}: {task_result.get('gid')}")
+                                        created_tasks.append(task_result)
+                                        # Mark these mentions as processed
+                                        mark_mentions_as_processed(user_mentions)
+                                except Exception as e:
+                                    logger.error(f"Failed to create respond-to-mentions task for {user_name}: {e}")
                         else:
                             logger.info("All mentions already processed - no new Asana task needed")
                     else:
