@@ -54,7 +54,7 @@ class Config:
     MONITORED_USER_NAMES = [name.strip() for name in _monitored_users_str.split(',') if name.strip()]
 
     # How far back to look for unanswered mentions (in hours)
-    MENTION_LOOKBACK_HOURS = int(os.getenv('MENTION_LOOKBACK_HOURS', '48'))
+    MENTION_LOOKBACK_HOURS = int(os.getenv('MENTION_LOOKBACK_HOURS', '168'))  # 7 days
 
     @classmethod
     def validate(cls):

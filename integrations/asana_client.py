@@ -716,7 +716,7 @@ class AsanaClient:
     def get_unanswered_mentions(
         self,
         monitored_user_names: List[str],
-        lookback_hours: int = 48
+        lookback_hours: int = 168
     ) -> List[Dict[str, Any]]:
         """Find comments that @mention monitored users and haven't been responded to.
 
