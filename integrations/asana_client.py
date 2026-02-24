@@ -42,6 +42,7 @@ class AsanaClient:
         self.stories_api = asana.StoriesApi(self.api_client)
         self.workspace_gid = Config.ASANA_WORKSPACE_GID
         self._user_gid_cache = {}  # Cache for user name -> GID mapping
+        self._token_owner_gid = None  # Cache for the API token owner's GID
         logger.info("AsanaClient initialized with timeout configuration")
 
     def create_task(self, title: str, notes: str, assignee_email: Optional[str] = None,
@@ -208,10 +209,17 @@ class AsanaClient:
 
             logger.info(f"Created respond-to-mentions task: {parent_task_gid} with {len(mentions)} mentions")
 
+            # Check if this task is for someone other than the token owner
+            is_other_user = assignee != Config.YOUR_NAME
+
+            # Remove token owner as follower if task is for another user
+            if is_other_user:
+                self._remove_token_owner_as_follower(parent_task_gid)
+
             # Create a subtask for each individual mention
             for i, mention in enumerate(mentions, 1):
                 try:
-                    self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid)
+                    self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid, is_other_user)
                 except Exception as e:
                     logger.error(f"Failed to create subtask #{i} for mention: {e}")
 
@@ -225,7 +233,8 @@ class AsanaClient:
             raise
 
     def _create_mention_subtask(self, parent_task_gid: str, mention: Dict[str, Any],
-                                 index: int, assignee_gid: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                                 index: int, assignee_gid: Optional[str] = None,
+                                 remove_owner_follower: bool = False) -> Optional[Dict[str, Any]]:
         """Create a subtask for a single unanswered mention.
 
         Args:
@@ -233,6 +242,7 @@ class AsanaClient:
             mention: Mention dictionary with details and draft response
             index: The mention number (for ordering)
             assignee_gid: GID of the user to assign to
+            remove_owner_follower: If True, remove the API token owner as follower
 
         Returns:
             Created subtask data, or None on failure
@@ -281,6 +291,10 @@ class AsanaClient:
 
         result = self.tasks_api.create_task({'data': subtask_data}, opts={})
         logger.info(f"Created mention subtask #{index}: {result['gid']} - {subtask_name}")
+
+        if remove_owner_follower:
+            self._remove_token_owner_as_follower(result['gid'])
+
         return result
 
     def get_completed_tasks_today(self) -> List[Dict[str, Any]]:
@@ -579,6 +593,53 @@ class AsanaClient:
             logger.warning(f"Error fetching users: {e}")
 
         return None
+
+    def _get_token_owner_gid(self) -> Optional[str]:
+        """Get the GID of the user who owns the API access token.
+
+        Uses the Asana 'me' endpoint to identify the authenticated user.
+        Result is cached after first call.
+
+        Returns:
+            User GID string or None if lookup fails
+        """
+        if self._token_owner_gid:
+            return self._token_owner_gid
+
+        try:
+            me = self.users_api.get_user('me', opts={})
+            self._token_owner_gid = me.get('gid')
+            logger.info(f"Token owner identified: {me.get('name')} ({self._token_owner_gid})")
+            return self._token_owner_gid
+        except Exception as e:
+            logger.warning(f"Could not identify token owner: {e}")
+            return None
+
+    def _remove_token_owner_as_follower(self, task_gid: str) -> None:
+        """Remove the API token owner as a follower from a task.
+
+        The Asana API automatically adds the token owner as a follower
+        on every task created through the API. This method removes that
+        auto-added follower so the token owner doesn't get inbox notifications
+        for tasks meant for other users.
+
+        Args:
+            task_gid: The GID of the task to remove the follower from
+        """
+        owner_gid = self._get_token_owner_gid()
+        if not owner_gid:
+            logger.warning("Cannot remove token owner as follower - GID unknown")
+            return
+
+        try:
+            self.tasks_api.remove_follower_for_task(
+                body={'data': {'followers': [owner_gid]}},
+                task_gid=task_gid,
+                opts={}
+            )
+            logger.info(f"Removed token owner as follower from task {task_gid}")
+        except Exception as e:
+            logger.warning(f"Failed to remove token owner as follower from task {task_gid}: {e}")
 
     def get_tasks_modified_since(self, since: datetime) -> List[Dict[str, Any]]:
         """Get tasks that have been modified since a given time.
