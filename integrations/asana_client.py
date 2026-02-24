@@ -209,8 +209,13 @@ class AsanaClient:
 
             logger.info(f"Created respond-to-mentions task: {parent_task_gid} with {len(mentions)} mentions")
 
-            # Check if this task is for someone other than the token owner
-            is_other_user = assignee != Config.YOUR_NAME
+            # Check if this task is for someone other than the token owner (GID-based, not name-based)
+            token_owner_gid = self._get_token_owner_gid()
+            is_other_user = (
+                assignee_gid is not None
+                and token_owner_gid is not None
+                and assignee_gid != token_owner_gid
+            )
 
             # Remove token owner as follower if task is for another user
             if is_other_user:
@@ -603,7 +608,7 @@ class AsanaClient:
         Returns:
             User GID string or None if lookup fails
         """
-        if self._token_owner_gid:
+        if self._token_owner_gid is not None:
             return self._token_owner_gid
 
         try:
