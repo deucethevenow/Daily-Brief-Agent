@@ -288,13 +288,14 @@ class AsanaClient:
         subtask_data = {
             'name': subtask_name,
             'notes': subtask_notes,
-            'parent': parent_task_gid,
         }
 
         if assignee_gid:
             subtask_data['assignee'] = assignee_gid
 
-        result = self.tasks_api.create_task({'data': subtask_data}, opts={})
+        result = self.tasks_api.create_subtask_for_task(
+            {'data': subtask_data}, parent_task_gid, opts={}
+        )
         logger.info(f"Created mention subtask #{index}: {result['gid']} - {subtask_name}")
 
         if remove_owner_follower:
