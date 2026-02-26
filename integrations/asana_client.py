@@ -221,14 +221,23 @@ class AsanaClient:
             if is_other_user:
                 self._remove_token_owner_as_follower(parent_task_gid)
 
-            # Create a subtask for each individual mention
+            # Create a subtask for each individual mention, tracking which succeed
+            successfully_subtasked = []
             for i, mention in enumerate(mentions, 1):
                 try:
                     self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid, is_other_user)
+                    successfully_subtasked.append(mention)
                 except Exception as e:
                     logger.error(f"Failed to create subtask #{i} for mention: {e}")
 
-            return result
+            failed_count = len(mentions) - len(successfully_subtasked)
+            if failed_count > 0:
+                logger.warning(
+                    f"{failed_count}/{len(mentions)} subtasks failed - those mentions "
+                    f"will NOT be marked processed and will reappear next run"
+                )
+
+            return result, successfully_subtasked
 
         except ApiException as e:
             logger.error(f"Error creating respond-to-mentions task: {e}")

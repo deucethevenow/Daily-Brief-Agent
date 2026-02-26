@@ -69,7 +69,7 @@ def test_mention_subtasks():
 
     # Create the task with subtasks
     try:
-        result = client.create_respond_to_mentions_task(
+        result, subtasked_mentions = client.create_respond_to_mentions_task(
             mock_mentions,
             assignee_name=Config.YOUR_NAME
         )
@@ -81,6 +81,7 @@ def test_mention_subtasks():
         parent_gid = result['gid']
         print(f"✓ Parent task created: {parent_gid}")
         print(f"   Name: {result.get('name')}")
+        print(f"   Subtasks tracked: {len(subtasked_mentions)}/{len(mock_mentions)}")
 
     except Exception as e:
         print(f"✗ Failed to create task: {e}")

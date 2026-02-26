@@ -168,15 +168,16 @@ class DailyBriefCoordinator:
                                         mark_mentions_as_processed(user_mentions)
                                         continue
 
-                                    task_result = self.asana.create_respond_to_mentions_task(
+                                    task_result, subtasked_mentions = self.asana.create_respond_to_mentions_task(
                                         user_mentions,
                                         assignee_name=user_name  # Assign to the mentioned user
                                     )
                                     if task_result:
                                         logger.info(f"Created respond-to-mentions task for {user_name}: {task_result.get('gid')}")
                                         created_tasks.append(task_result)
-                                        # Mark these mentions as processed
-                                        mark_mentions_as_processed(user_mentions)
+                                        # Only mark mentions whose subtasks were successfully created.
+                                        # Failed subtasks are NOT marked so they reappear next run.
+                                        mark_mentions_as_processed(subtasked_mentions)
                                 except Exception as e:
                                     logger.error(f"Failed to create respond-to-mentions task for {user_name}: {e}")
                         else:
