@@ -351,9 +351,9 @@ class DailyBriefCoordinator:
             results['airtable'] = False
             logger.error(f"✗ Airtable connection failed: {e}")
 
-        # Test Asana
+        # Test Asana (cheap single-call check — avoids 4-min overdue task fetch)
         try:
-            self.asana.get_overdue_tasks()
+            self.asana.verify_connection()
             results['asana'] = True
             logger.info("✓ Asana connection successful")
         except Exception as e:

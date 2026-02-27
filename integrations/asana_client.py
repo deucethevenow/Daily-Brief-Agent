@@ -580,6 +580,20 @@ class AsanaClient:
             logger.error(f"Error fetching overdue tasks: {e}")
             raise
 
+    def verify_connection(self) -> bool:
+        """Verify Asana API connectivity with a single cheap API call.
+
+        Uses the 'me' endpoint instead of fetching all overdue tasks,
+        which avoids a ~4 minute serial fetch just to check connectivity.
+
+        Returns:
+            True if connection is successful
+        Raises:
+            Exception if connection fails
+        """
+        me = self.users_api.get_user('me', opts={})
+        return me.get('gid') is not None
+
     # ============================================================
     # Methods for @Mention Monitoring
     # ============================================================

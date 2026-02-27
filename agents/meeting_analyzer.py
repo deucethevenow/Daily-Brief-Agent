@@ -227,7 +227,7 @@ IMPORTANT: Only return the JSON object, no additional text."""
 
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=8192,
+                max_tokens=32768,  # 18-meeting batches can produce 10K+ token responses; 8192 was causing truncation
                 messages=[
                     {"role": "user", "content": f"{prompt}\n\n{combined_content}"}
                 ]
