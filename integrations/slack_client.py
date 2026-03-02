@@ -218,8 +218,13 @@ class SlackClient:
             blocks
         )
 
-        # Send suggested response as separate message(s) if available
-        if mention.get('suggested_response'):
+        # Send suggested response only for the primary user (YOUR_NAME).
+        # Other monitored users (e.g. Jack) get their suggested responses in their Asana task.
+        from config import Config
+        primary_user = Config.YOUR_NAME
+        is_primary_user_mention = not primary_user or mention.get('mentioned_user_name') == primary_user
+
+        if mention.get('suggested_response') and is_primary_user_mention:
             response_text = mention['suggested_response']
 
             # Split into chunks if longer than 2800 chars (Slack limit is 3000, leave room for formatting)
