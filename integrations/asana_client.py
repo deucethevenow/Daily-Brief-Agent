@@ -226,7 +226,7 @@ class AsanaClient:
             subtask_gids = []
             for i, mention in enumerate(mentions, 1):
                 try:
-                    subtask = self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid)
+                    subtask = self._create_mention_subtask(parent_task_gid, mention, i)
                     successfully_subtasked.append(mention)
                     subtask_gids.append(subtask['gid'])
                 except Exception as e:
@@ -256,17 +256,17 @@ class AsanaClient:
             raise
 
     def _create_mention_subtask(self, parent_task_gid: str, mention: Dict[str, Any],
-                                 index: int, assignee_gid: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                                 index: int) -> Optional[Dict[str, Any]]:
         """Create a subtask for a single unanswered mention, with retry on transient errors.
 
-        Follower removal is handled by the caller (create_respond_to_mentions_task) after
-        ALL subtasks are created, to avoid Asana's task-reassignment window.
+        Subtasks are intentionally left unassigned — only the parent task is assigned to
+        the mentioned user. Follower removal is handled by the caller after all subtasks
+        are created, to avoid Asana's task-reassignment window.
 
         Args:
             parent_task_gid: GID of the parent mentions task
             mention: Mention dictionary with details and draft response
             index: The mention number (for ordering)
-            assignee_gid: GID of the user to assign to
 
         Returns:
             Created subtask data, or raises on failure
@@ -304,13 +304,11 @@ class AsanaClient:
 
         subtask_notes = '\n'.join(subtask_notes_parts)
 
+        # Subtasks are left unassigned — the parent task carries the assignee.
         subtask_data = {
             'name': subtask_name,
             'notes': subtask_notes,
         }
-
-        if assignee_gid:
-            subtask_data['assignee'] = assignee_gid
 
         # Retry up to 3 times with backoff to handle any transient errors.
         # Catches broad Exception (not just ApiException) so network-level errors
