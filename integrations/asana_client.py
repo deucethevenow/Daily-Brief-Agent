@@ -1,4 +1,5 @@
 """Asana client for managing tasks and fetching team progress."""
+import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import asana
@@ -217,16 +218,17 @@ class AsanaClient:
                 and assignee_gid != token_owner_gid
             )
 
-            # Remove token owner as follower if task is for another user
-            if is_other_user:
-                self._remove_token_owner_as_follower(parent_task_gid)
-
-            # Create a subtask for each individual mention, tracking which succeed
+            # Create subtasks FIRST — before removing the token owner as a follower.
+            # Removing the follower triggers Asana to reassign the task to the assignee's
+            # "My Tasks" list, which briefly makes the task inaccessible as a subtask parent
+            # (returns 400 "parent: Unknown object"). Creating subtasks first avoids this window.
             successfully_subtasked = []
+            subtask_gids = []
             for i, mention in enumerate(mentions, 1):
                 try:
-                    self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid, is_other_user)
+                    subtask = self._create_mention_subtask(parent_task_gid, mention, i, assignee_gid)
                     successfully_subtasked.append(mention)
+                    subtask_gids.append(subtask['gid'])
                 except Exception as e:
                     logger.error(f"Failed to create subtask #{i} for mention: {e}")
 
@@ -236,6 +238,13 @@ class AsanaClient:
                     f"{failed_count}/{len(mentions)} subtasks failed - those mentions "
                     f"will NOT be marked processed and will reappear next run"
                 )
+
+            # NOW remove token owner as follower from parent and all subtasks.
+            # Done after subtask creation so the reassignment window doesn't block us.
+            if is_other_user:
+                self._remove_token_owner_as_follower(parent_task_gid)
+                for subtask_gid in subtask_gids:
+                    self._remove_token_owner_as_follower(subtask_gid)
 
             return result, successfully_subtasked
 
@@ -247,19 +256,20 @@ class AsanaClient:
             raise
 
     def _create_mention_subtask(self, parent_task_gid: str, mention: Dict[str, Any],
-                                 index: int, assignee_gid: Optional[str] = None,
-                                 remove_owner_follower: bool = False) -> Optional[Dict[str, Any]]:
-        """Create a subtask for a single unanswered mention.
+                                 index: int, assignee_gid: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Create a subtask for a single unanswered mention, with retry on transient errors.
+
+        Follower removal is handled by the caller (create_respond_to_mentions_task) after
+        ALL subtasks are created, to avoid Asana's task-reassignment window.
 
         Args:
             parent_task_gid: GID of the parent mentions task
             mention: Mention dictionary with details and draft response
             index: The mention number (for ordering)
             assignee_gid: GID of the user to assign to
-            remove_owner_follower: If True, remove the API token owner as follower
 
         Returns:
-            Created subtask data, or None on failure
+            Created subtask data, or raises on failure
         """
         hours_ago = mention.get('hours_since_mention', 0)
         if hours_ago < 1:
@@ -302,15 +312,22 @@ class AsanaClient:
         if assignee_gid:
             subtask_data['assignee'] = assignee_gid
 
-        result = self.tasks_api.create_subtask_for_task(
-            {'data': subtask_data}, parent_task_gid, opts={}
-        )
-        logger.info(f"Created mention subtask #{index}: {result['gid']} - {subtask_name}")
-
-        if remove_owner_follower:
-            self._remove_token_owner_as_follower(result['gid'])
-
-        return result
+        # Retry up to 3 times with backoff to handle transient Asana errors
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                result = self.tasks_api.create_subtask_for_task(
+                    {'data': subtask_data}, parent_task_gid, opts={}
+                )
+                logger.info(f"Created mention subtask #{index}: {result['gid']} - {subtask_name}")
+                return result
+            except ApiException as e:
+                last_error = e
+                if attempt < 3:
+                    delay = 2 ** attempt  # 2s, 4s
+                    logger.warning(f"Subtask #{index} attempt {attempt} failed, retrying in {delay}s: {e}")
+                    time.sleep(delay)
+        raise last_error
 
     def get_completed_tasks_today(self) -> List[Dict[str, Any]]:
         """Get all tasks completed today for tracked team members.
@@ -754,7 +771,9 @@ class AsanaClient:
             for story in stories:
                 # Only include actual comments, not system events
                 if story.get('resource_subtype') == 'comment_added':
-                    created_by = story.get('created_by', {})
+                    # Use `or {}` (not default arg) so None values are also handled —
+                    # Asana returns "created_by": null for bot/system stories.
+                    created_by = story.get('created_by') or {}
                     comments.append({
                         'gid': story['gid'],
                         'created_at': story.get('created_at'),
