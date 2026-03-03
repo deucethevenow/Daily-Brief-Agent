@@ -220,9 +220,14 @@ class SlackClient:
 
         # Send suggested response only for the primary user (YOUR_NAME).
         # Other monitored users (e.g. Jack) get their suggested responses in their Asana task.
+        # If YOUR_NAME is not configured, suppress all draft responses — never silently re-enable
+        # the bug where Jack's responses appear in Deuce's Slack channel.
         from config import Config
         primary_user = Config.YOUR_NAME
-        is_primary_user_mention = not primary_user or mention.get('mentioned_user_name') == primary_user
+        if not primary_user:
+            is_primary_user_mention = False  # misconfigured — suppress rather than leak
+        else:
+            is_primary_user_mention = mention.get('mentioned_user_name') == primary_user
 
         if mention.get('suggested_response') and is_primary_user_mention:
             response_text = mention['suggested_response']
@@ -703,8 +708,11 @@ class SlackClient:
                 }
             })
 
-            # Add suggested response if available (compact)
-            if mention.get('suggested_response'):
+            # Add suggested response only for the primary user (same gate as _send_single_mention)
+            from config import Config
+            primary_user = Config.YOUR_NAME
+            is_primary = primary_user and mention.get('mentioned_user_name') == primary_user
+            if mention.get('suggested_response') and is_primary:
                 confidence = mention.get('response_confidence', 'low')
                 confidence_emoji = {'high': '✅', 'medium': '🟡', 'low': '🔴'}.get(confidence, '⚪')
 

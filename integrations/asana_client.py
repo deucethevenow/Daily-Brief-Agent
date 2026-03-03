@@ -140,7 +140,7 @@ class AsanaClient:
             return None
 
     def create_respond_to_mentions_task(self, mentions: List[Dict[str, Any]],
-                                        assignee_name: str = None) -> Optional[Dict[str, Any]]:
+                                        assignee_name: str = None) -> tuple:
         """Create a daily task to respond to unanswered @mentions, with subtasks for each mention.
 
         Creates a parent task with a summary (total count + instructions) and individual
@@ -156,7 +156,7 @@ class AsanaClient:
         """
         if not mentions:
             logger.info("No new mentions to create task for")
-            return None
+            return None, []
 
         today = datetime.now(Config.TIMEZONE)
         date_str = today.strftime('%B %d, %Y')
@@ -312,8 +312,10 @@ class AsanaClient:
         if assignee_gid:
             subtask_data['assignee'] = assignee_gid
 
-        # Retry up to 3 times with backoff to handle transient Asana errors
-        last_error = None
+        # Retry up to 3 times with backoff to handle any transient errors.
+        # Catches broad Exception (not just ApiException) so network-level errors
+        # from urllib3 also benefit from retries, not just SDK-wrapped HTTP errors.
+        last_error: Exception = RuntimeError(f"Subtask #{index} retry loop exited without result")
         for attempt in range(1, 4):
             try:
                 result = self.tasks_api.create_subtask_for_task(
@@ -321,12 +323,14 @@ class AsanaClient:
                 )
                 logger.info(f"Created mention subtask #{index}: {result['gid']} - {subtask_name}")
                 return result
-            except ApiException as e:
+            except Exception as e:
                 last_error = e
                 if attempt < 3:
                     delay = 2 ** attempt  # 2s, 4s
-                    logger.warning(f"Subtask #{index} attempt {attempt} failed, retrying in {delay}s: {e}")
+                    logger.warning(f"Subtask #{index} attempt {attempt}/3 failed, retrying in {delay}s: {e}")
                     time.sleep(delay)
+                else:
+                    logger.warning(f"Subtask #{index} attempt {attempt}/3 failed (no more retries): {e}")
         raise last_error
 
     def get_completed_tasks_today(self) -> List[Dict[str, Any]]:
@@ -890,7 +894,7 @@ class AsanaClient:
                         continue
 
                     # Check if this comment mentions the monitored user
-                    mentions = self.extract_mentions_from_html(comment.get('html_text', ''))
+                    mentions = self.extract_mentions_from_html(comment.get('html_text') or '')
                     for mention in mentions:
                         if mention['user_gid'] == user_gid:
                             mentions_to_user.append({
