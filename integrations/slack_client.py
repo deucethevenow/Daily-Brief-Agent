@@ -76,32 +76,31 @@ class SlackClient:
         return self.send_message(text, blocks)
 
     def _send_mentions_detailed(self, mentions: List[Dict[str, Any]]) -> None:
-        """Send unanswered mentions as separate detailed messages, grouped by person.
+        """Send unanswered mentions as separate detailed messages.
 
-        Each mention gets its own message with full context and draft response.
-        Shows ALL monitored users from config, even those with 0 mentions.
+        Only shows mentions for the primary user (YOUR_NAME) in Slack.
+        Other monitored users (e.g. Jack) get Asana tasks only — their
+        mentions are intentionally excluded from Slack to keep the brief
+        focused on the primary user's action items.
 
         Args:
             mentions: List of unanswered mention dictionaries
         """
         from config import Config
 
-        # Get all monitored users from config
-        all_monitored_users = Config.MONITORED_USER_NAMES or []
+        primary_user = Config.YOUR_NAME or ''
 
-        # Group mentions by mentioned user
-        by_user = {user: [] for user in all_monitored_users}  # Initialize all users
-        for mention in mentions:
-            user = mention.get('mentioned_user_name', 'Unknown')
-            if user not in by_user:
-                by_user[user] = []
-            by_user[user].append(mention)
+        # Only show primary user's mentions in Slack
+        primary_mentions = [
+            m for m in mentions
+            if m.get('mentioned_user_name') == primary_user
+        ] if primary_user else mentions  # fallback: show all if YOUR_NAME not set
 
-        total_mentions = len(mentions)
+        count = len(primary_mentions)
 
         # Send header message
-        if total_mentions > 0:
-            header_text = f"📬 {total_mentions} Unanswered @Mention{'s' if total_mentions != 1 else ''} Need Your Response"
+        if count > 0:
+            header_text = f"📬 {count} Unanswered @Mention{'s' if count != 1 else ''} Need Your Response"
         else:
             header_text = "📬 No Unanswered @Mentions - You're All Caught Up!"
 
@@ -118,37 +117,15 @@ class SlackClient:
                 "type": "context",
                 "elements": [{
                     "type": "mrkdwn",
-                    "text": "_Click 'Open in Asana' to respond. Draft responses are provided below each message._" if total_mentions > 0 else f"_Monitoring: {', '.join(all_monitored_users)}_"
+                    "text": "_Click 'Open in Asana' to respond. Draft responses are provided below each message._" if count > 0 else "_No unanswered mentions — all caught up!_"
                 }]
             }
         ]
         self.send_message("📬 Unanswered @Mentions", header_blocks)
 
-        # Send mentions grouped by user - show ALL monitored users
-        for user_name in all_monitored_users:
-            user_mentions = by_user.get(user_name, [])
-            count = len(user_mentions)
-
-            # Send section header for this user
-            if count > 0:
-                section_text = f"*━━━━━ For {user_name} ({count} message{'s' if count != 1 else ''}) ━━━━━*"
-            else:
-                section_text = f"*━━━━━ For {user_name} ━━━━━*\n✅ _No unanswered mentions - all caught up!_"
-
-            section_blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": section_text
-                    }
-                }
-            ]
-            self.send_message(f"Mentions for {user_name}", section_blocks)
-
-            # Send each mention for this user
-            for mention in user_mentions:
-                self._send_single_mention(mention)
+        # Send each of the primary user's mentions with full context + draft response
+        for mention in primary_mentions:
+            self._send_single_mention(mention)
 
     def _send_single_mention(self, mention: Dict[str, Any]) -> None:
         """Send a single mention as a detailed message.
