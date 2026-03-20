@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Dict, Any
 from config import Config
-from utils import setup_logger, filter_new_mentions, mark_mentions_as_processed
+from utils import setup_logger, filter_new_mentions, reserve_mentions, unreserve_mentions, make_dedup_key
 from integrations import AirtableClient, AsanaClient, SlackClient
 from agents import MeetingAnalyzerAgent, AsanaSummaryAgent, MentionResponseAgent
 
@@ -115,6 +115,9 @@ class DailyBriefCoordinator:
             logger.info(f"Overdue tasks: {len(overdue_tasks)}")
 
             # Step 4.5: Check for unanswered @mentions
+            # Uses composite dedup key (story_gid:user_gid) so a single comment
+            # mentioning both Jack and Deuce creates independent tracking entries.
+            # Uses reserve-before-create pattern to prevent TOCTOU race conditions.
             logger.info("Step 4.5: Checking for unanswered @mentions")
             unanswered_mentions = []
             new_mentions_for_task = []
@@ -127,7 +130,7 @@ class DailyBriefCoordinator:
                     )
 
                     if all_unanswered:
-                        # Filter out already-processed mentions (to avoid duplicate tasks)
+                        # Filter out already-processed mentions using composite keys
                         new_mentions_for_task = filter_new_mentions(all_unanswered)
                         logger.info(f"Found {len(all_unanswered)} unanswered mentions ({len(new_mentions_for_task)} new)")
 
@@ -139,47 +142,78 @@ class DailyBriefCoordinator:
                         # Create Asana task ONLY for NEW mentions (not previously processed)
                         # IMPORTANT: Create SEPARATE tasks for each monitored user
                         if new_mentions_for_task:
-                            # Get the new mentions with their drafted responses
-                            new_mention_ids = {m.get('mention_story_gid') for m in new_mentions_for_task}
+                            # Build set of composite keys for new mentions
+                            new_mention_keys = {make_dedup_key(m) for m in new_mentions_for_task}
+                            new_mention_keys.discard('')  # Remove empty keys
+
+                            # Match drafted mentions to new mentions using composite keys
                             new_mentions_with_drafts = [
                                 m for m in unanswered_mentions
-                                if m.get('mention_story_gid') in new_mention_ids
+                                if make_dedup_key(m) in new_mention_keys
                             ]
 
                             # Group mentions by the user they're for
                             mentions_by_user = {}
                             for mention in new_mentions_with_drafts:
-                                user_name = mention.get('mentioned_user_name', 'Unknown')
+                                user_name = mention.get('mentioned_user_name')
+                                if not user_name:
+                                    logger.error(f"Mention missing 'mentioned_user_name' — skipping: story_gid={mention.get('mention_story_gid')}")
+                                    continue
                                 if user_name not in mentions_by_user:
                                     mentions_by_user[user_name] = []
                                 mentions_by_user[user_name].append(mention)
 
                             logger.info(f"Creating separate Asana tasks for {len(mentions_by_user)} users with {len(new_mentions_with_drafts)} total mentions")
 
-                            # Create a separate task for each user (with duplicate prevention)
+                            # Create a separate task for each user (with atomic reservation)
                             created_tasks = []
                             for user_name, user_mentions in mentions_by_user.items():
+                                # STEP 1: Reserve mentions atomically BEFORE creating Asana task.
+                                # If another run is happening concurrently, it will see these
+                                # as already reserved and skip them.
+                                reserved_keys = reserve_mentions(user_mentions)
+                                if not reserved_keys:
+                                    logger.info(f"All mentions for {user_name} already reserved by another run — skipping")
+                                    continue
+
+                                # Only process mentions that we successfully reserved
+                                reserved_mentions = [
+                                    m for m in user_mentions
+                                    if make_dedup_key(m) in reserved_keys
+                                ]
+
                                 try:
                                     # Check if a mention task already exists for this user today
                                     existing_task = self.asana.find_existing_mention_task_for_today(user_name)
                                     if existing_task:
                                         logger.info(f"Skipping task creation for {user_name} - task already exists: {existing_task.get('gid')}")
-                                        # Still mark mentions as processed to avoid re-processing
-                                        mark_mentions_as_processed(user_mentions)
+                                        # Unreserve so these mentions can be picked up on
+                                        # the next run (e.g., appended as subtasks to the
+                                        # existing task in a future enhancement). Silently
+                                        # consuming them would lose mentions forever.
+                                        unreserve_mentions(reserved_keys)
                                         continue
 
+                                    # STEP 2: Create the Asana task
                                     task_result, subtasked_mentions = self.asana.create_respond_to_mentions_task(
-                                        user_mentions,
-                                        assignee_name=user_name  # Assign to the mentioned user
+                                        reserved_mentions,
+                                        assignee_name=user_name
                                     )
                                     if task_result:
                                         logger.info(f"Created respond-to-mentions task for {user_name}: {task_result.get('gid')}")
                                         created_tasks.append(task_result)
-                                        # Only mark mentions whose subtasks were successfully created.
-                                        # Failed subtasks are NOT marked so they reappear next run.
-                                        mark_mentions_as_processed(subtasked_mentions)
+
+                                        # STEP 3: Unreserve any mentions whose subtasks failed
+                                        # so they reappear on the next run.
+                                        subtasked_keys = {make_dedup_key(m) for m in subtasked_mentions}
+                                        failed_keys = reserved_keys - subtasked_keys
+                                        if failed_keys:
+                                            unreserve_mentions(failed_keys)
+                                            logger.warning(f"Unreserved {len(failed_keys)} failed subtask mentions for {user_name}")
                                 except Exception as e:
+                                    # STEP 4: On any failure, unreserve ALL so they retry next run
                                     logger.error(f"Failed to create respond-to-mentions task for {user_name}: {e}")
+                                    unreserve_mentions(reserved_keys)
                         else:
                             logger.info("All mentions already processed - no new Asana task needed")
                     else:

@@ -3,6 +3,10 @@
 
 Creates a test parent task with mock mention subtasks, verifies the structure,
 then cleans up by deleting the test tasks.
+
+IMPORTANT: This script creates REAL Asana tasks visible to the whole team.
+Run with --confirm to actually create tasks. Without that flag, it runs in
+dry-run mode (prints what would happen, no API calls).
 """
 import sys
 from config import Config
@@ -146,5 +150,14 @@ def test_mention_subtasks():
 
 
 if __name__ == '__main__':
+    if '--confirm' not in sys.argv:
+        print("\n⚠️  DRY-RUN MODE (no API calls made)")
+        print("   This script creates REAL Asana tasks visible to the whole team.")
+        print("   Run with --confirm to actually create and clean up test tasks.")
+        print("\n   Would create a parent task with 3 mock mentions assigned to:", Config.YOUR_NAME)
+        print("   Mentions: 'Q1 Budget Review', 'Sprint Planning Notes', 'Design System Update'")
+        print("\n   To run for real: python test_mention_subtasks.py --confirm")
+        sys.exit(0)
+
     success = test_mention_subtasks()
     sys.exit(0 if success else 1)

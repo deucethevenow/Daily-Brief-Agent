@@ -692,6 +692,10 @@ class AsanaClient:
     def get_tasks_modified_since(self, since: datetime) -> List[Dict[str, Any]]:
         """Get tasks that have been modified since a given time.
 
+        Scans tasks assigned to TEAM_MEMBERS AND MONITORED_USER_NAMES.
+        Both sets are needed because mentions can appear on tasks assigned
+        to any monitored user, not just team members tracked for overdue reports.
+
         Args:
             since: Datetime to look back from
 
@@ -705,14 +709,19 @@ class AsanaClient:
             # Get users in workspace to iterate through
             users = self.users_api.get_users_for_workspace(self.workspace_gid, opts={})
 
-            # Map team member names to user GIDs
+            # Combine TEAM_MEMBERS and MONITORED_USER_NAMES for scanning
+            # Both sets matter: TEAM_MEMBERS for overdue/completed tasks,
+            # MONITORED_USER_NAMES for mention detection on their assigned tasks
+            all_names_to_scan = set(Config.TEAM_MEMBERS) | set(Config.MONITORED_USER_NAMES)
+
+            # Map names to user GIDs
             team_user_gids = {}
             for user in users:
                 user_name = user.get('name', '')
-                if user_name in Config.TEAM_MEMBERS:
+                if user_name in all_names_to_scan:
                     team_user_gids[user_name] = user['gid']
 
-            logger.info(f"Checking tasks modified since {since} for {len(team_user_gids)} team members")
+            logger.info(f"Checking tasks modified since {since} for {len(team_user_gids)} users (team + monitored)")
 
             # For each team member, get their recently modified tasks
             seen_gids = set()

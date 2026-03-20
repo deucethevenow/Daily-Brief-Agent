@@ -3,12 +3,18 @@ from .logger import setup_logger
 from .mention_tracker import (
     filter_new_mentions,
     mark_mentions_as_processed,
-    load_processed_mentions
+    load_processed_mentions,
+    reserve_mentions,
+    unreserve_mentions,
+    make_dedup_key,
 )
 
 __all__ = [
     'setup_logger',
     'filter_new_mentions',
     'mark_mentions_as_processed',
-    'load_processed_mentions'
+    'load_processed_mentions',
+    'reserve_mentions',
+    'unreserve_mentions',
+    'make_dedup_key',
 ]
