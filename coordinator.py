@@ -1,4 +1,5 @@
 """Main Coordinator Agent - Orchestrates the daily brief workflow."""
+import time
 from datetime import datetime
 from typing import Dict, Any
 from config import Config
@@ -44,6 +45,7 @@ class DailyBriefCoordinator:
                 today = datetime.now(Config.TIMEZONE).date()
             is_friday = today.weekday() == 4  # Friday is day 4
 
+            run_start = time.monotonic()
             logger.info(f"Running daily brief for {today} (Friday: {is_friday})")
 
             # Step 1: Fetch today's meetings from Airtable
@@ -99,26 +101,15 @@ class DailyBriefCoordinator:
                 logger.info("Step 3: Suggesting action items for manual review (AUTO_CREATE_TASKS=false)")
                 logger.info("To enable auto-creation, set AUTO_CREATE_TASKS=true in .env")
 
-            # Step 4: Fetch Asana data
-            logger.info("Step 4: Fetching Asana task data")
-            try:
-                completed_tasks = self.asana.get_completed_tasks_today()
-                overdue_tasks = self.asana.get_overdue_tasks()
-            except Exception as e:
-                error_msg = f"Failed to fetch Asana tasks: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                self._send_error_notification(error_msg + "\n\nDaily brief will be sent without Asana task data.")
-                completed_tasks = []
-                overdue_tasks = []
-
-            logger.info(f"Completed tasks today: {len(completed_tasks)}")
-            logger.info(f"Overdue tasks: {len(overdue_tasks)}")
-
-            # Step 4.5: Check for unanswered @mentions
+            # Step 4: Check for unanswered @mentions FIRST
+            # This runs BEFORE the slow overdue task fetch (~10 min for 16 users)
+            # because mentions are time-sensitive and the overdue fetch was killing
+            # the process via the 900s timeout before mentions could complete.
             # Uses composite dedup key (story_gid:user_gid) so a single comment
             # mentioning both Jack and Deuce creates independent tracking entries.
             # Uses reserve-before-create pattern to prevent TOCTOU race conditions.
-            logger.info("Step 4.5: Checking for unanswered @mentions")
+            step4_start = time.monotonic()
+            logger.info("Step 4: Checking for unanswered @mentions (runs first — time-sensitive)")
             unanswered_mentions = []
             new_mentions_for_task = []
             try:
@@ -224,9 +215,34 @@ class DailyBriefCoordinator:
                 logger.error(f"Failed to fetch unanswered mentions: {e}")
                 unanswered_mentions = []
 
-            # Step 5: Generate report based on day
+            step4_elapsed = time.monotonic() - step4_start
+            logger.info(f"Step 4 (mentions) completed in {step4_elapsed:.1f}s")
+
+            # Step 5: Fetch Asana completed/overdue task data
+            # This is the SLOWEST step (~10 min for 16 users). It runs AFTER mentions
+            # so a slow scan can never starve the mention step via the timeout.
+            # If it fails or is slow, the report still sends with empty task data.
+            step5_start = time.monotonic()
+            logger.info("Step 5: Fetching Asana task data (completed + overdue)")
+            try:
+                completed_tasks = self.asana.get_completed_tasks_today()
+                logger.info(f"Completed tasks today: {len(completed_tasks)} ({time.monotonic() - step5_start:.1f}s)")
+
+                overdue_tasks = self.asana.get_overdue_tasks()
+                logger.info(f"Overdue tasks: {len(overdue_tasks)} ({time.monotonic() - step5_start:.1f}s total)")
+            except Exception as e:
+                error_msg = f"Failed to fetch Asana tasks: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                self._send_error_notification(error_msg + "\n\nDaily brief will be sent without Asana task data.")
+                completed_tasks = []
+                overdue_tasks = []
+
+            step5_elapsed = time.monotonic() - step5_start
+            logger.info(f"Step 5 (Asana tasks) completed in {step5_elapsed:.1f}s")
+
+            # Step 6: Generate report based on day
             if is_friday:
-                logger.info("Step 5: Generating weekly summary (Friday)")
+                logger.info("Step 6: Generating weekly summary (Friday)")
                 report_data = self._generate_weekly_report(
                     action_items=action_items_to_show,
                     completed_tasks=completed_tasks,
@@ -236,7 +252,7 @@ class DailyBriefCoordinator:
                 )
                 self.slack.send_weekly_summary(report_data)
             else:
-                logger.info("Step 5: Generating daily report")
+                logger.info("Step 6: Generating daily report")
                 report_data = self._generate_daily_report(
                     action_items=action_items_to_show,
                     completed_tasks=completed_tasks,
@@ -246,7 +262,8 @@ class DailyBriefCoordinator:
                 )
                 self.slack.send_daily_brief(report_data)
 
-            logger.info("Daily brief completed successfully")
+            total_elapsed = time.monotonic() - run_start
+            logger.info(f"Daily brief completed successfully in {total_elapsed:.1f}s")
             return True
 
         except Exception as e:

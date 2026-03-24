@@ -1,11 +1,11 @@
 #!/bin/bash
 #
 # Timeout wrapper for daily brief
-# Kills the process if it runs longer than 10 minutes (wall-clock time)
+# Kills the process if it runs longer than 30 minutes (wall-clock time)
 # Sends Slack notifications for bash-level failures
 #
 
-TIMEOUT=900  # 15 minutes in seconds (matches Cloud Run job timeout)
+TIMEOUT=1800  # 30 minutes in seconds (matches Cloud Run job timeout)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 cd "$SCRIPT_DIR"
