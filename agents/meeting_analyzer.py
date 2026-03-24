@@ -105,16 +105,20 @@ If there are no action items, return an empty array: []
 
 IMPORTANT: Only return the JSON array, no additional text or explanation."""
 
-            response = self.client.messages.create(
+            # Use streaming to avoid Anthropic's 10-minute timeout on
+            # long transcripts.
+            response_chunks = []
+            with self.client.messages.stream(
                 model=self.model,
                 max_tokens=4096,
                 messages=[
                     {"role": "user", "content": f"{prompt}\n\n{content}"}
                 ]
-            )
+            ) as stream:
+                for text in stream.text_stream:
+                    response_chunks.append(text)
 
-            # Extract the text response
-            response_text = response.content[0].text.strip()
+            response_text = ''.join(response_chunks).strip()
 
             # Parse JSON response
             # Handle cases where Claude might wrap JSON in markdown code blocks
@@ -225,15 +229,21 @@ Return a JSON object with this structure:
 
 IMPORTANT: Only return the JSON object, no additional text."""
 
-            response = self.client.messages.create(
+            # Use streaming to avoid Anthropic's 10-minute timeout on
+            # long-running requests. Large batch transcripts can take >10 min
+            # to process, which triggers "Streaming is required" errors.
+            response_chunks = []
+            with self.client.messages.stream(
                 model=self.model,
-                max_tokens=32768,  # 18-meeting batches can produce 10K+ token responses; 8192 was causing truncation
+                max_tokens=32768,
                 messages=[
                     {"role": "user", "content": f"{prompt}\n\n{combined_content}"}
                 ]
-            )
+            ) as stream:
+                for text in stream.text_stream:
+                    response_chunks.append(text)
 
-            response_text = response.content[0].text.strip()
+            response_text = ''.join(response_chunks).strip()
 
             # Parse JSON response
             if response_text.startswith('```'):
