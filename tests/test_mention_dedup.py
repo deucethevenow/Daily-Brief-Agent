@@ -37,7 +37,7 @@ from utils.mention_tracker import (
     save_processed_mentions,
     reserve_mentions,
     unreserve_mentions,
-    TRACKER_FILE,
+    LOCAL_TRACKER_FILE,
 )
 
 
@@ -76,9 +76,10 @@ def make_mention(story_gid: str, user_name: str, user_gid: str,
 
 @pytest.fixture(autouse=True)
 def isolated_tracker(tmp_path):
-    """Use a temp directory for the tracker file in every test."""
+    """Use a temp directory for the tracker file and disable GCS in every test."""
     tracker_file = str(tmp_path / 'data' / 'processed_mentions.json')
-    with patch('utils.mention_tracker.TRACKER_FILE', tracker_file):
+    with patch('utils.mention_tracker.LOCAL_TRACKER_FILE', tracker_file), \
+         patch('utils.mention_tracker._gcs_available', False):
         yield tracker_file
 
 
@@ -483,8 +484,8 @@ class TestTrackerPersistence:
         tracker = load_processed_mentions()  # Ensure dir exists
         # Get the actual tracker file path from the patched value
         import utils.mention_tracker as mt
-        os.makedirs(os.path.dirname(mt.TRACKER_FILE), exist_ok=True)
-        with open(mt.TRACKER_FILE, 'w') as f:
+        os.makedirs(os.path.dirname(mt.LOCAL_TRACKER_FILE), exist_ok=True)
+        with open(mt.LOCAL_TRACKER_FILE, 'w') as f:
             f.write("not valid json{{{")
 
         data = load_processed_mentions()

@@ -7,6 +7,9 @@ marks Deuce's mention of the same comment as "done", silently dropping it.
 
 Key format: "{story_gid}:{user_gid}"
 Legacy format (story_gid only) is auto-migrated on load.
+
+STORAGE: Uses Google Cloud Storage for persistence across ephemeral Cloud Run
+containers. Falls back to local file if GCS is unavailable (local dev).
 """
 import json
 import os
@@ -17,13 +20,59 @@ from utils import setup_logger
 
 logger = setup_logger(__name__)
 
-# File to store processed mention IDs
-TRACKER_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'processed_mentions.json')
+# Local file fallback
+LOCAL_TRACKER_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'processed_mentions.json')
+
+# GCS settings
+GCS_BUCKET = os.environ.get('GCS_TRACKER_BUCKET', 'daily-brief-agent-recess.appspot.com')
+GCS_BLOB_NAME = 'mention-tracker/processed_mentions.json'
+
+# Lazy-init GCS client (avoids import errors when google-cloud-storage not installed).
+# NOTE: _gcs_available is latched to False on first failure and never retried.
+# This is acceptable because each Cloud Run invocation is a fresh process.
+# For long-running processes, this would need a TTL-based retry.
+_gcs_client = None
+_gcs_available = None
+
+
+def _get_gcs_bucket():
+    """Get GCS bucket, lazily initializing the client.
+
+    Returns:
+        GCS Bucket object, or None if GCS is unavailable
+    """
+    global _gcs_client, _gcs_available
+
+    if _gcs_available is False:
+        return None
+
+    if _gcs_client is not None:
+        try:
+            return _gcs_client.bucket(GCS_BUCKET)
+        except Exception:
+            _gcs_available = False
+            return None
+
+    try:
+        from google.cloud import storage
+        _gcs_client = storage.Client()
+        _gcs_available = True
+        bucket = _gcs_client.bucket(GCS_BUCKET)
+        logger.info(f"GCS tracker initialized: gs://{GCS_BUCKET}/{GCS_BLOB_NAME}")
+        return bucket
+    except ImportError:
+        logger.info("google-cloud-storage not installed — using local file tracker")
+        _gcs_available = False
+        return None
+    except Exception as e:
+        logger.warning(f"GCS unavailable ({e}) — using local file tracker")
+        _gcs_available = False
+        return None
 
 
 def _ensure_data_dir():
-    """Ensure the data directory exists."""
-    data_dir = os.path.dirname(TRACKER_FILE)
+    """Ensure the local data directory exists."""
+    data_dir = os.path.dirname(LOCAL_TRACKER_FILE)
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
         logger.info(f"Created data directory: {data_dir}")
@@ -53,20 +102,66 @@ def make_dedup_key(mention: Dict[str, Any]) -> str:
     return f"{story_gid}:{user_gid}"
 
 
-def load_processed_mentions() -> Dict[str, Any]:
-    """Load the set of already-processed mention keys.
-
-    Keys are composite "{story_gid}:{user_gid}" strings.
-    Legacy plain story_gid entries are preserved for backward compat
-    but will NOT match new composite keys, ensuring they are re-processed
-    per-user (which is the correct behavior for the migration).
+def _load_from_gcs() -> Dict[str, Any]:
+    """Load tracker data from GCS.
 
     Returns:
-        Dictionary with 'processed_ids' set and metadata
+        Tracker data dict (empty if blob doesn't exist), or None if GCS unavailable
     """
+    bucket = _get_gcs_bucket()
+    if not bucket:
+        return None
+
+    try:
+        blob = bucket.blob(GCS_BLOB_NAME)
+        if not blob.exists():
+            logger.info("GCS tracker blob does not exist yet — starting fresh")
+            return {
+                'processed_ids': set(),
+                'last_updated': None,
+                'total_processed': 0
+            }
+        content = blob.download_as_text()
+        data = json.loads(content)
+        data['processed_ids'] = set(data.get('processed_ids', []))
+        logger.debug(f"Loaded {len(data['processed_ids'])} processed mentions from GCS")
+        return data
+    except Exception as e:
+        logger.warning(f"Failed to load from GCS: {e}")
+        return None
+
+
+def _save_to_gcs(data: Dict[str, Any]) -> bool:
+    """Save tracker data to GCS.
+
+    Args:
+        data: Tracker data with 'processed_ids' as a list (not set)
+
+    Returns:
+        True if saved successfully
+    """
+    bucket = _get_gcs_bucket()
+    if not bucket:
+        return False
+
+    try:
+        blob = bucket.blob(GCS_BLOB_NAME)
+        blob.upload_from_string(
+            json.dumps(data, indent=2),
+            content_type='application/json'
+        )
+        logger.debug(f"Saved {data.get('total_processed', 0)} processed mentions to GCS")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to save to GCS: {e}")
+        return False
+
+
+def _load_from_local() -> Dict[str, Any]:
+    """Load tracker data from local file."""
     _ensure_data_dir()
 
-    if not os.path.exists(TRACKER_FILE):
+    if not os.path.exists(LOCAL_TRACKER_FILE):
         return {
             'processed_ids': set(),
             'last_updated': None,
@@ -74,14 +169,12 @@ def load_processed_mentions() -> Dict[str, Any]:
         }
 
     try:
-        with open(TRACKER_FILE, 'r') as f:
+        with open(LOCAL_TRACKER_FILE, 'r') as f:
             data = json.load(f)
-            raw_ids = data.get('processed_ids', [])
-            # Convert list back to set
-            data['processed_ids'] = set(raw_ids)
+            data['processed_ids'] = set(data.get('processed_ids', []))
             return data
     except Exception as e:
-        logger.error(f"Error loading processed mentions: {e}")
+        logger.error(f"Error loading local tracker: {e}")
         return {
             'processed_ids': set(),
             'last_updated': None,
@@ -89,15 +182,65 @@ def load_processed_mentions() -> Dict[str, Any]:
         }
 
 
+def _save_to_local(data: Dict[str, Any]) -> bool:
+    """Save tracker data to local file."""
+    _ensure_data_dir()
+    try:
+        with open(LOCAL_TRACKER_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving local tracker: {e}")
+        return False
+
+
+def load_processed_mentions() -> Dict[str, Any]:
+    """Load the set of already-processed mention keys.
+
+    Tries GCS first (for Cloud Run persistence), falls back to local file.
+
+    Returns:
+        Dictionary with 'processed_ids' set and metadata
+    """
+    # Try GCS first
+    data = _load_from_gcs()
+    if data is not None:
+        return data
+
+    # Fall back to local file
+    return _load_from_local()
+
+
+def _save_data(data: Dict[str, Any]):
+    """Save tracker data to both GCS and local file.
+
+    Writes to GCS first (primary), then local (backup).
+    """
+    # Ensure processed_ids is a list for JSON serialization
+    ids = data.get('processed_ids', set())
+    ids_list = list(ids)
+    serializable_data = {
+        'processed_ids': ids_list,
+        'last_updated': data.get('last_updated', datetime.now(Config.TIMEZONE).isoformat()),
+        'total_processed': len(ids_list)
+    }
+
+    gcs_ok = _save_to_gcs(serializable_data)
+    _save_to_local(serializable_data)
+
+    if gcs_ok:
+        logger.info(f"Tracker saved to GCS ({serializable_data['total_processed']} entries)")
+    else:
+        logger.info(f"Tracker saved to local file ({serializable_data['total_processed']} entries)")
+
+
 def save_processed_mentions(mention_ids: Set[str], existing_data: Dict[str, Any] = None):
-    """Save newly processed mention IDs to the tracker file.
+    """Save newly processed mention IDs.
 
     Args:
         mention_ids: Set of composite dedup keys that were just processed
         existing_data: Existing tracker data to merge with
     """
-    _ensure_data_dir()
-
     if existing_data is None:
         existing_data = load_processed_mentions()
 
@@ -105,17 +248,13 @@ def save_processed_mentions(mention_ids: Set[str], existing_data: Dict[str, Any]
     all_ids = existing_data['processed_ids'] | mention_ids
 
     data = {
-        'processed_ids': list(all_ids),  # Convert set to list for JSON
+        'processed_ids': all_ids,
         'last_updated': datetime.now(Config.TIMEZONE).isoformat(),
         'total_processed': len(all_ids)
     }
 
-    try:
-        with open(TRACKER_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Saved {len(mention_ids)} new processed mentions (total: {len(all_ids)})")
-    except Exception as e:
-        logger.error(f"Error saving processed mentions: {e}")
+    _save_data(data)
+    logger.info(f"Saved {len(mention_ids)} new processed mentions (total: {len(all_ids)})")
 
 
 def filter_new_mentions(mentions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -211,17 +350,13 @@ def unreserve_mentions(dedup_keys: Set[str]):
     tracker_data['processed_ids'] -= dedup_keys
 
     data = {
-        'processed_ids': list(tracker_data['processed_ids']),
+        'processed_ids': tracker_data['processed_ids'],
         'last_updated': datetime.now(Config.TIMEZONE).isoformat(),
         'total_processed': len(tracker_data['processed_ids'])
     }
 
-    try:
-        with open(TRACKER_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Unreserved {len(dedup_keys)} mentions after failure")
-    except Exception as e:
-        logger.error(f"Error unreserving mentions: {e}")
+    _save_data(data)
+    logger.info(f"Unreserved {len(dedup_keys)} mentions after failure")
 
 
 def clear_old_processed_mentions(days_to_keep: int = 30):

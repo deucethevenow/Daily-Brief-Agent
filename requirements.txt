@@ -8,6 +8,9 @@ pyairtable>=2.3.0
 asana>=5.0.0
 slack-sdk>=3.26.0
 
+# Cloud Storage (for persistent mention tracker across ephemeral Cloud Run containers)
+google-cloud-storage>=2.14.0
+
 # Utilities
 python-dateutil>=2.8.0
 pytz>=2024.1
