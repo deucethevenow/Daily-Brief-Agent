@@ -165,7 +165,7 @@ class AsanaClient:
         notes_parts = [
             f"📬 Unanswered @Mentions - {date_str}",
             "=" * 50,
-            f"You have {len(mentions)} mention(s) that need responses.",
+            f"You have {len(mentions)} unanswered comment(s) grouped into subtasks below.",
             "",
             "Instructions:",
             "1. Review each mention below",
@@ -218,16 +218,29 @@ class AsanaClient:
                 and assignee_gid != token_owner_gid
             )
 
+            # Collapse mentions: group by (task_gid, author) so multiple comments
+            # from the same person on the same task become ONE subtask.
+            # e.g., Jack leaves 2 comments on "Write PRD" → 1 subtask with both comments.
+            collapsed = {}
+            for mention in mentions:
+                group_key = (mention.get('task_gid', ''), mention.get('author_name', ''))
+                if group_key not in collapsed:
+                    collapsed[group_key] = []
+                collapsed[group_key].append(mention)
+
+            collapsed_mentions = list(collapsed.values())  # List of lists
+            logger.info(f"Collapsed {len(mentions)} mentions into {len(collapsed_mentions)} subtasks")
+
             # Create subtasks FIRST — before removing the token owner as a follower.
             # Removing the follower triggers Asana to reassign the task to the assignee's
             # "My Tasks" list, which briefly makes the task inaccessible as a subtask parent
             # (returns 400 "parent: Unknown object"). Creating subtasks first avoids this window.
             successfully_subtasked = []
             subtask_gids = []
-            for i, mention in enumerate(mentions, 1):
+            for i, mention_group in enumerate(collapsed_mentions, 1):
                 try:
-                    subtask = self._create_mention_subtask(parent_task_gid, mention, i)
-                    successfully_subtasked.append(mention)
+                    subtask = self._create_mention_subtask(parent_task_gid, mention_group, i)
+                    successfully_subtasked.extend(mention_group)  # All mentions in group are processed
                     subtask_gids.append(subtask['gid'])
                 except Exception as e:
                     logger.error(f"Failed to create subtask #{i} for mention: {e}")
@@ -255,9 +268,13 @@ class AsanaClient:
             logger.error(f"Error creating respond-to-mentions task: {e}")
             raise
 
-    def _create_mention_subtask(self, parent_task_gid: str, mention: Dict[str, Any],
+    def _create_mention_subtask(self, parent_task_gid: str, mention_group: List[Dict[str, Any]],
                                  index: int) -> Optional[Dict[str, Any]]:
-        """Create a subtask for a single unanswered mention, with retry on transient errors.
+        """Create a subtask for unanswered mentions, collapsing same-task same-author.
+
+        Multiple comments from the same person on the same task are combined into
+        one subtask with all comments listed. This avoids noisy duplicates when
+        someone posts 2-3 quick messages on the same task.
 
         Subtasks are intentionally left unassigned — only the parent task is assigned to
         the mentioned user. Follower removal is handled by the caller after all subtasks
@@ -265,42 +282,57 @@ class AsanaClient:
 
         Args:
             parent_task_gid: GID of the parent mentions task
-            mention: Mention dictionary with details and draft response
-            index: The mention number (for ordering)
+            mention_group: List of mention dicts from the same author on the same task
+            index: The subtask number (for ordering)
 
         Returns:
             Created subtask data, or raises on failure
         """
-        hours_ago = mention.get('hours_since_mention', 0)
-        if hours_ago < 1:
-            time_str = "just now"
-        elif hours_ago < 24:
-            time_str = f"{int(hours_ago)} hours ago"
+        # Use the first mention for shared fields (task name, project, author, url)
+        primary = mention_group[0]
+        author_name = primary.get('author_name', 'Unknown')
+        task_name = primary.get('task_name', 'Unknown Task')
+        comment_count = len(mention_group)
+
+        # Subtask name: include count if multiple comments
+        if comment_count > 1:
+            subtask_name = f"Reply to {author_name} on \"{task_name}\" ({comment_count} comments)"
         else:
-            time_str = f"{int(hours_ago / 24)} days ago"
+            subtask_name = f"Reply to {author_name} on \"{task_name}\""
 
-        confidence = mention.get('response_confidence', 'unknown')
-        confidence_indicator = {'high': '✅', 'medium': '🟡', 'low': '🔴'}.get(confidence, '⚪')
-
-        author_name = mention.get('author_name', 'Unknown')
-        task_name = mention.get('task_name', 'Unknown Task')
-
-        # Subtask name: concise but informative
-        subtask_name = f"Reply to {author_name} on \"{task_name}\""
-
-        # Subtask description: all the details for this specific mention
+        # Subtask description: header + all comments listed
         subtask_notes_parts = [
             f"📋 Task: {task_name}",
-            f"📁 Project: {mention.get('project_name', 'No Project')}",
-            f"🔗 Link: {mention.get('task_url', 'No link')}",
-            f"👤 From: {author_name} ({time_str})",
+            f"📁 Project: {primary.get('project_name', 'No Project')}",
+            f"🔗 Link: {primary.get('task_url', 'No link')}",
+            f"👤 From: {author_name} ({comment_count} comment{'s' if comment_count > 1 else ''})",
             "",
-            "💬 Comment:",
-            f"   \"{mention.get('comment_text', 'No comment')}\"",
-            "",
-            f"{confidence_indicator} Draft Response ({confidence} confidence):",
-            f"   \"{mention.get('suggested_response', 'No draft available')}\"",
         ]
+
+        # Add each comment
+        for j, mention in enumerate(mention_group, 1):
+            hours_ago = mention.get('hours_since_mention', 0)
+            if hours_ago < 1:
+                time_str = "just now"
+            elif hours_ago < 24:
+                time_str = f"{int(hours_ago)} hours ago"
+            else:
+                time_str = f"{int(hours_ago / 24)} days ago"
+
+            if comment_count > 1:
+                subtask_notes_parts.append(f"💬 Comment {j} ({time_str}):")
+            else:
+                subtask_notes_parts.append(f"💬 Comment ({time_str}):")
+            subtask_notes_parts.append(f"   \"{mention.get('comment_text', 'No comment')}\"")
+            subtask_notes_parts.append("")
+
+        # Add draft response from the most recent comment (sorted by time)
+        sorted_group = sorted(mention_group, key=lambda m: m.get('comment_created_at', ''))
+        latest = sorted_group[-1]
+        confidence = latest.get('response_confidence', 'unknown')
+        confidence_indicator = {'high': '✅', 'medium': '🟡', 'low': '🔴'}.get(confidence, '⚪')
+        subtask_notes_parts.append(f"{confidence_indicator} Draft Response ({confidence} confidence):")
+        subtask_notes_parts.append(f"   \"{latest.get('suggested_response', 'No draft available')}\"")
 
         subtask_notes = '\n'.join(subtask_notes_parts)
 
