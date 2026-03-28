@@ -27,6 +27,7 @@ class Config:
     # Slack
     SLACK_BOT_TOKEN = os.getenv('SLACK_BOT_TOKEN')
     SLACK_CHANNEL_ID = os.getenv('SLACK_CHANNEL_ID')
+    SLACK_TEAM_CHANNEL_ID = os.getenv('SLACK_TEAM_CHANNEL_ID', '')  # #team channel for mention summaries
 
     # Timezone
     TIMEZONE = pytz.timezone(os.getenv('TIMEZONE', 'America/Denver'))

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, Any
 from config import Config
 from utils import setup_logger, filter_new_mentions, reserve_mentions, unreserve_mentions, make_dedup_key
+from utils.team_config import get_monitored_user_names, get_user_slack_id
 from integrations import AirtableClient, AsanaClient, SlackClient
 from agents import MeetingAnalyzerAgent, AsanaSummaryAgent, MentionResponseAgent
 
@@ -112,11 +113,14 @@ class DailyBriefCoordinator:
             logger.info("Step 4: Checking for unanswered @mentions (runs first — time-sensitive)")
             unanswered_mentions = []
             new_mentions_for_task = []
+            team_task_results = []  # Collect per-user results for #team Slack summary
             try:
-                if Config.MONITORED_USER_NAMES:
+                # Load monitored users from GCS config (or env var fallback)
+                monitored_names = get_monitored_user_names()
+                if monitored_names:
                     # Get all unanswered mentions
                     all_unanswered = self.asana.get_unanswered_mentions(
-                        Config.MONITORED_USER_NAMES,
+                        monitored_names,
                         Config.MENTION_LOOKBACK_HOURS
                     )
 
@@ -194,6 +198,15 @@ class DailyBriefCoordinator:
                                         logger.info(f"Created respond-to-mentions task for {user_name}: {task_result.get('gid')}")
                                         created_tasks.append(task_result)
 
+                                        # Track for #team Slack summary (skip primary user — they get full brief)
+                                        if user_name != Config.YOUR_NAME:
+                                            team_task_results.append({
+                                                'user_name': user_name,
+                                                'slack_user_id': get_user_slack_id(user_name),
+                                                'task_gid': task_result.get('gid'),
+                                                'mention_count': len(reserved_mentions),
+                                            })
+
                                         # STEP 3: Unreserve any mentions whose subtasks failed
                                         # so they reappear on the next run.
                                         subtasked_keys = {make_dedup_key(m) for m in subtasked_mentions}
@@ -214,6 +227,15 @@ class DailyBriefCoordinator:
             except Exception as e:
                 logger.error(f"Failed to fetch unanswered mentions: {e}")
                 unanswered_mentions = []
+
+            # Send #team channel summary for non-primary users who got mention tasks
+            if team_task_results:
+                try:
+                    date_str = today.strftime('%b %d')
+                    self.slack.send_team_mention_summary(team_task_results, date_str)
+                    logger.info(f"Sent team mention summary to #team channel ({len(team_task_results)} users)")
+                except Exception as e:
+                    logger.error(f"Failed to send team mention summary: {e}")
 
             step4_elapsed = time.monotonic() - step4_start
             logger.info(f"Step 4 (mentions) completed in {step4_elapsed:.1f}s")
