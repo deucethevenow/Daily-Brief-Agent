@@ -198,14 +198,13 @@ class DailyBriefCoordinator:
                                         logger.info(f"Created respond-to-mentions task for {user_name}: {task_result.get('gid')}")
                                         created_tasks.append(task_result)
 
-                                        # Track for #team Slack summary (skip primary user — they get full brief)
-                                        if user_name != Config.YOUR_NAME:
-                                            team_task_results.append({
-                                                'user_name': user_name,
-                                                'slack_user_id': get_user_slack_id(user_name),
-                                                'task_gid': task_result.get('gid'),
-                                                'mention_count': len(reserved_mentions),
-                                            })
+                                        # Track for #team Slack summary (all users including primary)
+                                        team_task_results.append({
+                                            'user_name': user_name,
+                                            'slack_user_id': get_user_slack_id(user_name),
+                                            'task_gid': task_result.get('gid'),
+                                            'mention_count': len(reserved_mentions),
+                                        })
 
                                         # STEP 3: Unreserve any mentions whose subtasks failed
                                         # so they reappear on the next run.
@@ -228,7 +227,7 @@ class DailyBriefCoordinator:
                 logger.error(f"Failed to fetch unanswered mentions: {e}")
                 unanswered_mentions = []
 
-            # Send #team channel summary for non-primary users who got mention tasks
+            # Send #team channel summary for all users who got mention tasks
             if team_task_results:
                 try:
                     date_str = today.strftime('%b %d')
